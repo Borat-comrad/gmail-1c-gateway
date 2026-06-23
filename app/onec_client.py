@@ -1,3 +1,5 @@
+import json
+from email.message import Message
 from typing import Any
 from urllib.parse import quote
 
@@ -14,6 +16,36 @@ def _error_message(status_code: int) -> str:
         500: "Ошибка сервера 1С",
     }
     return messages.get(status_code, f"Сервис 1С вернул ошибку {status_code}")
+
+
+def _charset_from_content_type(content_type: str | None) -> str | None:
+    if not content_type:
+        return None
+
+    message = Message()
+    message["content-type"] = content_type
+    return message.get_param("charset", header="content-type")
+
+
+def decode_response_body(content: bytes, content_type: str | None) -> str:
+    # 1C may return Russian data in a legacy encoding.
+    encodings = [
+        _charset_from_content_type(content_type),
+        "utf-8",
+        "cp1251",
+        "windows-1251",
+    ]
+
+    for encoding in encodings:
+        if not encoding:
+            continue
+
+        try:
+            return content.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+
+    return content.decode("utf-8", errors="replace")
 
 
 async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
@@ -43,13 +75,17 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
             "raw": None,
         }
 
-    raw = response.text or None
+    decoded_text = decode_response_body(
+        response.content,
+        response.headers.get("content-type"),
+    )
 
     if response.status_code == 200:
         try:
-            data = response.json()
+            data = json.loads(decoded_text)
         except ValueError:
             data = None
+            raw = decoded_text
         else:
             raw = None
 
@@ -66,5 +102,5 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
         "code": code,
         "source_status": response.status_code,
         "error": _error_message(response.status_code),
-        "raw": raw,
+        "raw": decoded_text,
     }
