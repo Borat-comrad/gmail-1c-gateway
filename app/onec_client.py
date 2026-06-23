@@ -32,19 +32,20 @@ def _charset_from_content_type(content_type: str | None) -> str | None:
 
 
 def is_mojibake(text: str) -> bool:
-    markers = (
-        "\u00d0",
-        "\u00d1",
-        "\u0420\u045f",
-        "\u0420\u00b0",
-        "\u0420\u00b5",
-        "\u0420\u0455",
-        "\u0420\u0451",
-        "\u0421\u0403",
-        "\u0421\u201a",
-        "\u0421\u0402",
-        "\ufffd",
+    return has_bad_mojibake(text)
+
+
+def has_cyrillic(text: str) -> bool:
+    return any(
+        "\u0410" <= char <= "\u042f"
+        or "\u0430" <= char <= "\u044f"
+        or char in ("\u0401", "\u0451")
+        for char in text
     )
+
+
+def has_bad_mojibake(text: str) -> bool:
+    markers = ("\u00d0", "\u00d1", "\u0420\u045f", "\u0421\u0403", "\u0421\u201a")
     return any(marker in text for marker in markers)
 
 
@@ -62,12 +63,22 @@ def repair_mojibake(text: str) -> str | None:
 
 
 def repair_text_value(value: str) -> str:
-    if not is_mojibake(value):
-        return value
+    attempts = []
 
-    repaired = repair_mojibake(value)
-    if repaired is not None:
-        return repaired
+    if "\u00d0" in value or "\u00d1" in value:
+        attempts.extend(("latin1", "cp1252"))
+
+    if "\u0420" in value or "\u0421" in value:
+        attempts.append("cp1251")
+
+    for source_encoding in dict.fromkeys(attempts):
+        try:
+            repaired = value.encode(source_encoding).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+
+        if has_cyrillic(repaired) and not has_bad_mojibake(repaired):
+            return repaired
 
     return value
 
@@ -158,22 +169,27 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
             data = None
             raw = repair_text_value(decoded_text)
         else:
-            data = repair_json_mojibake(parsed)
+            repaired = repair_json_mojibake(parsed)
+            data = repaired
             raw = None
             logger.warning(
                 "1C decoded response diagnostics: content_type=%r decoded_preview=%r parsed_preview=%r",
                 content_type,
                 decoded_text[:300],
-                json.dumps(data, ensure_ascii=False)[:300],
+                json.dumps(repaired, ensure_ascii=False)[:300],
             )
 
-        return {
+        result = {
             "ok": True,
             "code": code,
             "source_status": response.status_code,
             "data": data,
             "raw": raw,
         }
+        if isinstance(data, dict):
+            result["debug_repaired_keys"] = list(data.keys())
+
+        return result
 
     return {
         "ok": False,
