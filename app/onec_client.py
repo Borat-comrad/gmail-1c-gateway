@@ -1,4 +1,5 @@
 import json
+import logging
 from email.message import Message
 from typing import Any
 from urllib.parse import quote
@@ -6,6 +7,9 @@ from urllib.parse import quote
 import httpx
 
 from app.config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def _error_message(status_code: int) -> str:
@@ -27,23 +31,53 @@ def _charset_from_content_type(content_type: str | None) -> str | None:
     return message.get_param("charset", header="content-type")
 
 
+def is_mojibake(text: str) -> bool:
+    markers = ("Ð", "Ñ", "Рџ", "Р", "СЃ", "�")
+    return any(marker in text for marker in markers)
+
+
+def repair_mojibake(text: str) -> str | None:
+    for source_encoding in ("latin1", "cp1251"):
+        try:
+            repaired = text.encode(source_encoding).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+
+        if not is_mojibake(repaired):
+            return repaired
+
+    return None
+
+
 def decode_response_body(content: bytes, content_type: str | None) -> str:
     # 1C may return Russian data in a legacy encoding.
-    encodings = [
-        _charset_from_content_type(content_type),
+    encodings = []
+    for encoding in (
         "utf-8",
         "cp1251",
         "windows-1251",
-    ]
+        _charset_from_content_type(content_type),
+    ):
+        if encoding and encoding not in encodings:
+            encodings.append(encoding)
+
+    decoded_candidates = []
 
     for encoding in encodings:
-        if not encoding:
-            continue
-
         try:
-            return content.decode(encoding)
+            decoded = content.decode(encoding)
         except (LookupError, UnicodeDecodeError):
             continue
+
+        if not is_mojibake(decoded):
+            return decoded
+
+        decoded_candidates.append(decoded)
+
+    for decoded in decoded_candidates:
+        repaired = repair_mojibake(decoded)
+        if repaired is not None:
+            return repaired
 
     return content.decode("utf-8", errors="replace")
 
@@ -79,6 +113,7 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
         response.content,
         response.headers.get("content-type"),
     )
+    logger.warning("1C decoded response preview: %r", decoded_text[:300])
 
     if response.status_code == 200:
         try:
