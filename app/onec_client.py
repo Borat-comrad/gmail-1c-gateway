@@ -45,8 +45,24 @@ def has_cyrillic(text: str) -> bool:
 
 
 def has_bad_mojibake(text: str) -> bool:
-    markers = ("\u00d0", "\u00d1", "\u0420\u045f", "\u0421\u0403", "\u0421\u201a")
-    return any(marker in text for marker in markers)
+    return bad_marker_score(text) > 0
+
+
+def bad_marker_score(text: str) -> int:
+    markers = (
+        "\u00d0",
+        "\u00d1",
+        "\u0420\u045f",
+        "\u0420\u00b0",
+        "\u0420\u00b5",
+        "\u0420\u0455",
+        "\u0420\u0451",
+        "\u0421\u0403",
+        "\u0421\u201a",
+        "\u0421\u0402",
+        "\ufffd",
+    )
+    return sum(text.count(marker) for marker in markers)
 
 
 def repair_mojibake(text: str) -> str | None:
@@ -66,18 +82,36 @@ def repair_text_value(value: str) -> str:
     attempts = []
 
     if "\u00d0" in value or "\u00d1" in value:
-        attempts.extend(("latin1", "cp1252"))
+        attempts.extend(
+            (
+                ("latin1", "strict"),
+                ("cp1252", "strict"),
+                ("latin1", "ignore"),
+                ("cp1252", "ignore"),
+                ("latin1", "replace"),
+                ("cp1252", "replace"),
+            )
+        )
 
     if "\u0420" in value or "\u0421" in value:
-        attempts.append("cp1251")
+        attempts.append(("cp1251", "strict"))
 
-    for source_encoding in dict.fromkeys(attempts):
+    original_score = bad_marker_score(value)
+
+    for source_encoding, errors in dict.fromkeys(attempts):
         try:
-            repaired = value.encode(source_encoding).decode("utf-8")
+            repaired = value.encode(source_encoding, errors=errors).decode(
+                "utf-8",
+                errors="replace" if errors != "strict" else "strict",
+            )
         except (UnicodeEncodeError, UnicodeDecodeError):
             continue
 
-        if has_cyrillic(repaired) and not has_bad_mojibake(repaired):
+        repaired_score = bad_marker_score(repaired)
+        if has_cyrillic(repaired) and repaired_score < original_score:
+            return repaired
+
+        if has_cyrillic(repaired) and "\u00d0" not in repaired and "\u00d1" not in repaired:
             return repaired
 
     return value
@@ -163,15 +197,23 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
     decoded_text = decode_response_body(response.content, content_type)
 
     if response.status_code == 200:
+        debug_original_keys_repr = []
+        debug_repaired_keys_repr = []
         try:
             parsed = json.loads(decoded_text)
         except ValueError:
             data = None
             raw = repair_text_value(decoded_text)
         else:
+            if isinstance(parsed, dict):
+                debug_original_keys_repr = [repr(key) for key in parsed.keys()]
+
             repaired = repair_json_mojibake(parsed)
             data = repaired
             raw = None
+            if isinstance(repaired, dict):
+                debug_repaired_keys_repr = [repr(key) for key in repaired.keys()]
+
             logger.warning(
                 "1C decoded response diagnostics: content_type=%r decoded_preview=%r parsed_preview=%r",
                 content_type,
@@ -185,6 +227,8 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
             "source_status": response.status_code,
             "data": data,
             "raw": raw,
+            "debug_original_keys_repr": debug_original_keys_repr,
+            "debug_repaired_keys_repr": debug_repaired_keys_repr,
         }
         if isinstance(data, dict):
             result["debug_repaired_keys"] = list(data.keys())
