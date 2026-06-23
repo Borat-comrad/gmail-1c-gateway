@@ -32,7 +32,19 @@ def _charset_from_content_type(content_type: str | None) -> str | None:
 
 
 def is_mojibake(text: str) -> bool:
-    markers = ("Ð", "Ñ", "Рџ", "Р", "СЃ", "�")
+    markers = (
+        "\u00d0",
+        "\u00d1",
+        "\u0420\u045f",
+        "\u0420\u00b0",
+        "\u0420\u00b5",
+        "\u0420\u0455",
+        "\u0420\u0451",
+        "\u0421\u0403",
+        "\u0421\u201a",
+        "\u0421\u0402",
+        "\ufffd",
+    )
     return any(marker in text for marker in markers)
 
 
@@ -47,6 +59,33 @@ def repair_mojibake(text: str) -> str | None:
             return repaired
 
     return None
+
+
+def repair_text_value(value: str) -> str:
+    if not is_mojibake(value):
+        return value
+
+    repaired = repair_mojibake(value)
+    if repaired is not None:
+        return repaired
+
+    return value
+
+
+def repair_json_mojibake(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            repair_text_value(key) if isinstance(key, str) else key: repair_json_mojibake(val)
+            for key, val in value.items()
+        }
+
+    if isinstance(value, list):
+        return [repair_json_mojibake(item) for item in value]
+
+    if isinstance(value, str):
+        return repair_text_value(value)
+
+    return value
 
 
 def decode_response_body(content: bytes, content_type: str | None) -> str:
@@ -109,20 +148,24 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
             "raw": None,
         }
 
-    decoded_text = decode_response_body(
-        response.content,
-        response.headers.get("content-type"),
-    )
-    logger.warning("1C decoded response preview: %r", decoded_text[:300])
+    content_type = response.headers.get("content-type")
+    decoded_text = decode_response_body(response.content, content_type)
 
     if response.status_code == 200:
         try:
-            data = json.loads(decoded_text)
+            parsed = json.loads(decoded_text)
         except ValueError:
             data = None
-            raw = decoded_text
+            raw = repair_text_value(decoded_text)
         else:
+            data = repair_json_mojibake(parsed)
             raw = None
+            logger.warning(
+                "1C decoded response diagnostics: content_type=%r decoded_preview=%r parsed_preview=%r",
+                content_type,
+                decoded_text[:300],
+                json.dumps(data, ensure_ascii=False)[:300],
+            )
 
         return {
             "ok": True,
@@ -137,5 +180,5 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
         "code": code,
         "source_status": response.status_code,
         "error": _error_message(response.status_code),
-        "raw": decoded_text,
+        "raw": repair_text_value(decoded_text),
     }
