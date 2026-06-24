@@ -35,16 +35,20 @@ def make_onec_headers(login: str, password: str) -> dict[str, str]:
     }
 
 
-async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
+async def fetch_onec_response(settings: Settings, code: str) -> httpx.Response:
     safe_code = quote(code, safe="")
     url = f"{settings.onec_base_url}/{safe_code}"
 
+    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+        return await client.get(
+            url,
+            headers=make_onec_headers(settings.onec_login, settings.onec_password),
+        )
+
+
+async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
     try:
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            response = await client.get(
-                url,
-                headers=make_onec_headers(settings.onec_login, settings.onec_password),
-            )
+        response = await fetch_onec_response(settings=settings, code=code)
     except httpx.TimeoutException:
         return {
             "ok": False,
@@ -96,15 +100,8 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
 
 
 async def fetch_price_history_debug_raw(settings: Settings, code: str) -> dict[str, Any]:
-    safe_code = quote(code, safe="")
-    url = f"{settings.onec_base_url}/{safe_code}"
-
     try:
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            response = await client.get(
-                url,
-                headers=make_onec_headers(settings.onec_login, settings.onec_password),
-            )
+        response = await fetch_onec_response(settings=settings, code=code)
     except httpx.TimeoutException:
         return {
             "ok": False,
