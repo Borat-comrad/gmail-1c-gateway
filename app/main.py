@@ -27,8 +27,8 @@ async def health() -> dict[str, bool]:
     return {"ok": True}
 
 
-@app.post("/api/v1/price-history")
-async def price_history(payload: PriceHistoryRequest) -> Response | dict:
+@app.post("/api/v1/price-history", response_model=None)
+async def price_history(payload: PriceHistoryRequest):
     code = payload.code.strip()
     if not code:
         raise HTTPException(status_code=400, detail="code must not be empty")
