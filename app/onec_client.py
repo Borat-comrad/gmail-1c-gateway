@@ -1,3 +1,4 @@
+import base64
 import json
 from typing import Any
 from urllib.parse import quote
@@ -17,6 +18,13 @@ def _error_message(status_code: int) -> str:
     return messages.get(status_code, f"Сервис 1С вернул ошибку {status_code}")
 
 
+def make_basic_auth_header(login: str, password: str) -> str:
+    raw = f"{login}:{password}"
+    raw_bytes = raw.encode("utf-8")
+    encoded = base64.b64encode(raw_bytes).decode("ascii")
+    return f"Basic {encoded}"
+
+
 async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
     safe_code = quote(code, safe="")
     url = f"{settings.onec_base_url}/{safe_code}"
@@ -25,8 +33,13 @@ async def fetch_price_history(settings: Settings, code: str) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             response = await client.get(
                 url,
-                auth=(settings.onec_login, settings.onec_password),
-                headers={"Accept": "application/json, text/plain, */*"},
+                headers={
+                    "Authorization": make_basic_auth_header(
+                        settings.onec_login,
+                        settings.onec_password,
+                    ),
+                    "Accept": "application/json, text/plain, */*",
+                },
             )
     except httpx.TimeoutException:
         return {
